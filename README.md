@@ -107,6 +107,8 @@ Reverse:  Proxy → CircuitBreaker → RateLimiter → Auth → Logger
 
 This mirrors how Express.js, Django, and FastAPI middleware all work internally.
 
+---
+
 ### Rate Limiting
 
 Two algorithms, both implemented with atomic Lua scripts in Redis to prevent race conditions:
@@ -114,6 +116,8 @@ Two algorithms, both implemented with atomic Lua scripts in Redis to prevent rac
 **Token Bucket** — each client gets a bucket of N tokens refilled at R tokens/second. Allows bursting up to bucket capacity. Good for APIs where occasional traffic spikes are acceptable.
 
 **Sliding Window** — tracks all requests in the last N seconds using a Redis sorted set. No burst allowance. Strictly enforces the rate. Good for hard caps.
+
+---
 
 ### Circuit Breaker
 
@@ -130,6 +134,8 @@ CLOSED ──(threshold failures)──► OPEN ──(timeout elapsed)──►
 - **Recovery** — let one probe request through to test if upstream recovered
 
 Without a circuit breaker, a down upstream causes every request to wait for the full timeout. With it, failure is instant and the upstream gets time to recover.
+
+---
 
 ### Storage Abstraction
 
