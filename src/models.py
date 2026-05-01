@@ -1,7 +1,7 @@
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 
 class CircuitState(Enum):
@@ -35,3 +35,24 @@ class ProxyResponse:
     status_code: int
     response_time: float
     from_cache: bool = False
+
+
+@dataclass
+class RouteConfig:
+    route_id: str
+    path_prefix: str
+    upstream_URL: str
+    timeout: float
+    strip_prefix: bool = True
+    middleware_names: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class MiddlewareContext:
+    request: ProxyRequest
+    route_config: RouteConfig
+    abort_response: Optional[Dict[str, Any]] = None
+    response: Optional[ProxyResponse] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
