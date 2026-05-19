@@ -55,4 +55,3 @@ class MiddlewareContext:
     abort_response: Optional[Dict[str, Any]] = None
     response: Optional[ProxyResponse] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
-    
