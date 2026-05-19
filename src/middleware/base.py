@@ -4,9 +4,9 @@ from models import MiddlewareContext, MiddlewareResult
 
 
 class Middleware(ABC):
-    @property
+    @property  # lets you access a method like its an attribute
     @abstractmethod
-    def name(self) -> str:
+    def name(self) -> str:  # used to indentify the middleware
         pass
 
     @abstractmethod
