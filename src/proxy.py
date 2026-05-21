@@ -1,8 +1,17 @@
+import time
+from tracemalloc import start
+from types import BuiltinMethodType
+
+import httpx
+
 from src.middleware.base import Middleware
 from src.models import MiddlewareContext, MiddlewareResult
 
 
 class ProxyMiddleware(Middleware):
+    def __init__(self):
+        self.client = httpx.AsyncClient(follow_redirects=False)
+
     @property
     def name(self) -> str:
         return "proxy"
@@ -38,6 +47,20 @@ class ProxyMiddleware(Middleware):
             if key.lower() not in HOP_BY_HOP:
                 forward_headers[key] = value
 
+        # add standard headers expected by the server
         forward_headers["X-Request-ID"] = curr_request.request_id
         forward_headers["X-Forwarded-For"] = curr_request.client_ip
         forward_headers["X-Forwarded-Proto"] = "https"
+
+        start_time = time.perf_counter()
+
+        response = await self.client.request(
+            method=curr_request.method,
+            url=final_upstream_URL,
+            headers=forward_headers,
+            content=curr_request.body,
+        )
+
+        end_time = time.perf_counter()
+
+        response_time = (end_time - start_time) * 1000
