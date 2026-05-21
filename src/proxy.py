@@ -89,3 +89,18 @@ class ProxyMiddleware(Middleware):
         )
 
         return MiddlewareResult.PASS
+
+    """
+    This is kept as a separate method because the HTTP client is supposed
+    to stay alive across many requests so connection pooling can work.
+
+    If we closed the client inside process(), all pooled connections would
+    be destroyed after every request, defeating the purpose of reusing them.
+
+    This method is meant to be called once when the application shuts down,
+    allowing the AsyncClient to gracefully close all open sockets and
+    release network resources properly.
+    """
+
+    async def close(self):
+        await self.client.aclose()
