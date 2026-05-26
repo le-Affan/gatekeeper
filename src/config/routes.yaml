@@ -1,0 +1,20 @@
+routes:
+  - route_id: 0001
+    path_prefix: /api/user
+    upstream_URL: http://localhost:8000 # temporarily set to local
+    timeout: 30
+    strip_prefix: true
+    middleware_names:
+      - ratelimiter
+      - auth
+    metadata: {}
+
+  - route_id: 0002
+    path_prefix: /api/user/admin
+    upstream_URL: http://localhost:8000 # temporarily set to local
+    timeout: 60
+    strip_prefix: true
+    middleware_names:
+      - ratelimiter
+      - auth
+    metadata: {}
