@@ -1,0 +1,6 @@
+rate_limiter:
+  api_key_headers:
+    - x-api-key
+    - authorization
+    - api-key
+    - apikey
