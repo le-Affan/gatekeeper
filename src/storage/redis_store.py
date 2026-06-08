@@ -28,4 +28,4 @@ class RedisStorage(Storage):
     async def execute_script(
         self, script: str, keys: list[str], args: list[Any]
     ) -> Any:
-        raise NotImplementedError()
+        return await self.redis.eval(script, len(keys), *keys, *args)

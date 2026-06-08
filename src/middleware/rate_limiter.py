@@ -1,12 +1,119 @@
+"""
+Rate Limiter Middleware
+
+The RateLimiter class is a custom middleware component that inherits from the Middleware base class.
+It enforces per-client request limits using either a token bucket or sliding window algorithm,
+with state stored atomically in Redis via Lua scripts.
+
+Key Components:
+- Constructor (__init__): Accepts and stores configuration parameters: algorithm, api_key_headers,
+  storage, plus algorithm-specific tuning (capacity/refill_rate for token bucket,
+  limit/window_seconds for sliding window).
+- Property name: Returns "rate-limiter".
+- Method process: Resolves a unique client identifier for rate limiting by checking API key headers
+  and falling back to the client's IP address, then runs the configured algorithm's Lua script
+  against Redis to decide whether the request is allowed.
+"""
+import time
+import uuid
+
 from src.middleware.base import Middleware
 from src.models import MiddlewareContext, MiddlewareResult
 
+# Lua script for token bucket algorithm.
+# KEYS[1] = bucket key
+# ARGV[1] = capacity (max tokens)
+# ARGV[2] = refill_rate (tokens per second)
+# ARGV[3] = now (current timestamp, seconds, float)
+# ARGV[4] = requested tokens (cost of this request)
+# ARGV[5] = ttl (seconds, used to expire idle buckets)
+TOKEN_BUCKET_SCRIPT = """
+local bucket_key = KEYS[1]
+local capacity = tonumber(ARGV[1])
+local refill_rate = tonumber(ARGV[2])
+local now = tonumber(ARGV[3])
+local requested = tonumber(ARGV[4])
+local ttl = tonumber(ARGV[5])
+
+local bucket = redis.call('HMGET', bucket_key, 'tokens', 'last_refill')
+local tokens = tonumber(bucket[1])
+local last_refill = tonumber(bucket[2])
+
+if tokens == nil then
+    tokens = capacity
+    last_refill = now
+end
+
+-- refill based on elapsed time, capped at capacity
+local elapsed = math.max(0, now - last_refill)
+tokens = math.min(capacity, tokens + elapsed * refill_rate)
+
+local allowed = 0
+if tokens >= requested then
+    tokens = tokens - requested
+    allowed = 1
+end
+
+redis.call('HMSET', bucket_key, 'tokens', tokens, 'last_refill', now)
+redis.call('EXPIRE', bucket_key, ttl)
+
+return allowed
+"""
+
+# Lua script for sliding window algorithm.
+# KEYS[1] = sorted set key
+# ARGV[1] = now (current timestamp, seconds, float)
+# ARGV[2] = window (window size in seconds)
+# ARGV[3] = limit (max requests allowed in the window)
+# ARGV[4] = request_id (unique member id for this request)
+# ARGV[5] = ttl (seconds, used to expire idle windows)
+SLIDING_WINDOW_SCRIPT = """
+local window_key = KEYS[1]
+local now = tonumber(ARGV[1])
+local window = tonumber(ARGV[2])
+local limit = tonumber(ARGV[3])
+local request_id = ARGV[4]
+local ttl = tonumber(ARGV[5])
+
+-- drop entries older than the window
+redis.call('ZREMRANGEBYSCORE', window_key, '-inf', now - window)
+
+local count = redis.call('ZCARD', window_key)
+
+local allowed = 0
+if count < limit then
+    redis.call('ZADD', window_key, now, request_id)
+    allowed = 1
+end
+
+redis.call('EXPIRE', window_key, ttl)
+
+return allowed
+"""
+
 
 class RateLimiter(Middleware):
-    def __init__(self, algorithm: str, api_key_headers: list[str], storage: str):
+    def __init__(
+        self,
+        algorithm: str,
+        api_key_headers: list[str],
+        storage: str,
+        capacity: int = 10,
+        refill_rate: float = 1.0,
+        limit: int = 10,
+        window_seconds: int = 60,
+    ):
         self.storage = storage
         self.algorithm = algorithm
         self.api_key_headers = api_key_headers
+
+        # token bucket config
+        self.capacity = capacity
+        self.refill_rate = refill_rate
+
+        # sliding window config
+        self.limit = limit
+        self.window_seconds = window_seconds
 
     @property
     def name(self) -> str:
@@ -25,7 +132,47 @@ class RateLimiter(Middleware):
         if not identifier:
             identifier = context.request.client_ip
 
-        # creating namespaced key
-        identifier = f"rate-limiter:{identifier}"
+        # creating namespaced key (namespaced so it can't collide with e.g. circuit-breaker keys)
+        key = f"rate-limiter:{self.algorithm}:{identifier}"
 
-        
+        now = time.time()
+
+        if self.algorithm == "token_bucket":
+            ttl = int(self.capacity / self.refill_rate) + 1 if self.refill_rate > 0 else 60
+            allowed = await self.storage.execute_script(
+                TOKEN_BUCKET_SCRIPT,
+                [key],
+                [self.capacity, self.refill_rate, now, 1, ttl],
+            )
+        else:  # sliding_window
+            ttl = self.window_seconds + 1
+            request_id = f"{now}:{uuid.uuid4()}"
+            allowed = await self.storage.execute_script(
+                SLIDING_WINDOW_SCRIPT,
+                [key],
+                [now, self.window_seconds, self.limit, request_id, ttl],
+            )
+
+        if int(allowed) == 1:
+            return MiddlewareResult.PASS
+
+        # RFC 6585: 429 Too Many Requests should include Retry-After.
+        retry_after = (
+            int(1 / self.refill_rate) + 1
+            if self.algorithm == "token_bucket" and self.refill_rate > 0
+            else self.window_seconds
+        )
+
+        context.abort_response = {
+            "status_code": 429,
+            "headers": {
+                "Retry-After": str(retry_after),
+                "X-RateLimit-Limit": str(
+                    self.capacity if self.algorithm == "token_bucket" else self.limit
+                ),
+                "X-RateLimit-Remaining": "0",
+            },
+            "body": b"Too Many Requests",
+        }
+
+        return MiddlewareResult.ABORT
