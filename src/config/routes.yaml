@@ -5,8 +5,8 @@ routes:
     timeout: 30
     strip_prefix: true
     middleware_names:
-      - ratelimiter
       - auth
+      - rate-limiter
     metadata: {}
 
   - route_id: 0002
@@ -15,6 +15,6 @@ routes:
     timeout: 60
     strip_prefix: true
     middleware_names:
-      - ratelimiter
       - auth
+      - rate-limiter
     metadata: {}

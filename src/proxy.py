@@ -62,14 +62,15 @@ class ProxyMiddleware(Middleware):
             )
 
         except httpx.TimeoutException:
-            context.abort_response = {"status_code": 504, "detail": "Request Timeout"}
+            context.abort_response = {"status_code": 504, "headers": {}, "body": b"Request Timeout"}
 
             return MiddlewareResult.ABORT
 
         except httpx.ConnectError:
             context.abort_response = {
                 "status_code": 502,
-                "detail": "Could Not Connect To Server",
+                "headers": {},
+                "body": b"Could Not Connect To Server",
             }
 
             return MiddlewareResult.ABORT

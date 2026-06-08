@@ -19,6 +19,7 @@ import uuid
 
 from src.middleware.base import Middleware
 from src.models import MiddlewareContext, MiddlewareResult
+from src.storage.base import Storage
 
 # Lua script for token bucket algorithm.
 # KEYS[1] = bucket key
@@ -97,7 +98,7 @@ class RateLimiter(Middleware):
         self,
         algorithm: str,
         api_key_headers: list[str],
-        storage: str,
+        storage: Storage,
         capacity: int = 10,
         refill_rate: float = 1.0,
         limit: int = 10,

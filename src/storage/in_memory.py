@@ -10,6 +10,10 @@ class InMemoryStorage(Storage):
         self.lifetime = {}
 
     async def get_value(self, key: str) -> Optional[Any]:
+        if key in self.store and key in self.lifetime and time.time() > self.lifetime[key]:
+            del self.store[key]
+            del self.lifetime[key]
+            return None
         return self.store.get(key)
 
     async def set_value(self, key: str, value: Any, expire_in: int) -> None:
