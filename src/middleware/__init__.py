@@ -14,6 +14,9 @@ class MiddlewareChain:
             result = await middleware.process(context)
             middleware_record.append(middleware)
 
+            if result not in (MiddlewareResult.PASS, MiddlewareResult.ABORT):
+                raise TypeError(f"{middleware.name} returned {result!r}, expected MiddlewareResult")
+
             if result == MiddlewareResult.ABORT:
                 break
 
