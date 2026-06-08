@@ -163,6 +163,10 @@ class RateLimiter(Middleware):
             else self.window_seconds
         )
 
+        # Explicit flag so downstream middleware (e.g. logger) doesn't have to
+        # infer "rate limited" from the status code, which is fragile.
+        context.metadata["rate_limited"] = True
+
         context.abort_response = {
             "status_code": 429,
             "headers": {

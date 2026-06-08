@@ -97,6 +97,12 @@ class CircuitBreaker(Middleware):
                     allow = False
         # Lock released here. Upstream I/O (if allowed) happens outside the lock.
 
+        # Expose the (post-transition) state so the logger can record it without
+        # reaching into this middleware's private _routes map. Single stamp point
+        # covers reject paths and probe-election paths alike, since route_state.state
+        # already reflects any transition decided above.
+        context.metadata["circuit_state"] = route_state.state.value
+
         if allow:
             return MiddlewareResult.PASS
 
