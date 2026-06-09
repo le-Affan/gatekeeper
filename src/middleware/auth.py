@@ -16,7 +16,7 @@ import hashlib
 from src.middleware.base import Middleware
 from src.models import MiddlewareContext, MiddlewareResult
 
-API_KEY_HEADER = "X-API-Key"
+API_KEY_HEADER = "x-api-key"
 REDIS_KEY_PREFIX = "auth:apikey"
 
 
