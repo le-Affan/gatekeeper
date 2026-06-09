@@ -1,9 +1,11 @@
+import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Dict
 
 from fastapi import FastAPI, Request, Response
 
+from src.analytics.collector import AnalyticsCollector, RequestRecord
 from src.config.routes import load_routes, match_route
 from src.config.settings import GatekeeperSettings
 from src.middleware import MiddlewareChain
@@ -70,6 +72,7 @@ def build_chain(
 async def lifespan(app: FastAPI):
     storage = _build_storage(settings)
     registry = _build_registry(settings, storage)
+    collector = AnalyticsCollector(settings.metrics_window_seconds)
     logger_mw = Logger()
     proxy_mw = ProxyMiddleware()
     routes = load_routes()
@@ -82,6 +85,7 @@ async def lifespan(app: FastAPI):
                     f"Known middleware: {sorted(registry.keys())}"
                 )
 
+    app.state.collector = collector
     app.state.storage = storage
     app.state.registry = registry
     app.state.logger_mw = logger_mw
@@ -120,9 +124,8 @@ async def routes_info(request: Request):
 
 
 @app.get("/gatekeeper/metrics")
-async def metrics():
-    # TODO (Task 6.1): integrate analytics collector here
-    return {"message": "metrics not yet implemented"}
+async def metrics(request: Request):
+    return request.app.state.collector.get_summary()
 
 
 @app.api_route("/{path:path}", methods=_SUPPORTED_METHODS)
@@ -157,6 +160,28 @@ async def gateway(request: Request, path: str):
 
     context = MiddlewareContext(request=proxy_request, route_config=matched_route)
     context = await chain.execute(context)
+
+    if context.response is not None:
+        status_code = context.response.status_code
+        upstream_latency_ms = context.response.response_time
+    elif context.abort_response is not None:
+        status_code = context.abort_response.get("status_code", 500)
+        upstream_latency_ms = 0.0
+    else:
+        status_code = 500
+        upstream_latency_ms = 0.0
+
+    request.app.state.collector.record(
+        RequestRecord(
+            timestamp=time.monotonic(),
+            route_id=str(matched_route.route_id),
+            status_code=status_code,
+            total_latency_ms=context.metadata.get("total_latency_ms") or 0.0,
+            upstream_latency_ms=upstream_latency_ms,
+            rate_limited=context.metadata.get("rate_limited", False),
+            circuit_open=context.metadata.get("circuit_state") == "open",
+        )
+    )
 
     if context.abort_response is not None:
         abort = context.abort_response

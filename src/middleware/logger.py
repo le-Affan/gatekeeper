@@ -38,6 +38,8 @@ class Logger(Middleware):
             status_code = (context.abort_response or {}).get("status_code")
             upstream_latency = None
 
+        context.metadata["total_latency_ms"] = total_latency * 1000 if total_latency is not None else None
+
         record = {
             "request_id": context.request.request_id,
             "method": context.request.method,
