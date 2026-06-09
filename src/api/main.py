@@ -1,4 +1,3 @@
-import os
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Dict
@@ -6,6 +5,7 @@ from typing import Any, Dict
 from fastapi import FastAPI, Request, Response
 
 from src.config.routes import load_routes, match_route
+from src.config.settings import GatekeeperSettings
 from src.middleware import MiddlewareChain
 from src.middleware.auth import Auth
 from src.middleware.circuit_breaker import CircuitBreaker
@@ -16,41 +16,50 @@ from src.proxy import ProxyMiddleware
 from src.storage.in_memory import InMemoryStorage
 from src.storage.redis_store import RedisStorage
 
+settings = GatekeeperSettings()
 
-def _build_storage():
-    redis_url = os.environ.get("REDIS_URL")
-    if redis_url:
-        return RedisStorage(redis_url)
+
+def _build_storage(s: GatekeeperSettings):
+    if s.redis_url:
+        return RedisStorage(s.redis_url)
     return InMemoryStorage()
 
 
-def _build_registry(storage) -> Dict[str, Any]:
+def _build_registry(s: GatekeeperSettings, storage) -> Dict[str, Any]:
     return {
-        "auth": Auth(require_auth=True, storage=storage),
+        "auth": Auth(require_auth=s.auth_require_auth, storage=storage),
         "rate-limiter": RateLimiter(
-            algorithm=os.environ.get("RATE_LIMIT_ALGORITHM", "sliding_window"),
-            api_key_headers=["x-api-key", "authorization", "api-key", "apikey"],
+            algorithm=s.rate_limit_algorithm,
+            api_key_headers=s.rate_limit_api_key_headers,
             storage=storage,
-            capacity=int(os.environ.get("RATE_LIMIT_CAPACITY", "100")),
-            refill_rate=float(os.environ.get("RATE_LIMIT_REFILL_RATE", "10.0")),
-            limit=int(os.environ.get("RATE_LIMIT_LIMIT", "100")),
-            window_seconds=int(os.environ.get("RATE_LIMIT_WINDOW", "60")),
+            capacity=s.rate_limit_capacity,
+            refill_rate=s.rate_limit_refill_rate,
+            limit=s.rate_limit_limit,
+            window_seconds=s.rate_limit_window_seconds,
         ),
         "circuit-breaker": CircuitBreaker(
-            failure_threshold=int(os.environ.get("CB_FAILURE_THRESHOLD", "5")),
-            window_seconds=float(os.environ.get("CB_WINDOW_SECONDS", "60.0")),
-            recovery_timeout=float(os.environ.get("CB_RECOVERY_TIMEOUT", "30.0")),
-            success_threshold=int(os.environ.get("CB_SUCCESS_THRESHOLD", "1")),
+            failure_threshold=s.cb_failure_threshold,
+            window_seconds=s.cb_window_seconds,
+            recovery_timeout=s.cb_recovery_timeout,
+            success_threshold=s.cb_success_threshold,
         ),
     }
 
 
-def build_chain(route: RouteConfig, logger_mw: Logger, proxy_mw: ProxyMiddleware, registry: Dict[str, Any]) -> MiddlewareChain:
+def build_chain(
+    route: RouteConfig,
+    logger_mw: Logger,
+    proxy_mw: ProxyMiddleware,
+    registry: Dict[str, Any],
+) -> MiddlewareChain:
     chain = [logger_mw]
 
     for name in route.middleware_names:
         if name not in registry:
-            raise ValueError(f"Unknown middleware '{name}' in route '{route.route_id}'")
+            raise ValueError(
+                f"Unknown middleware '{name}' in route '{route.route_id}'. "
+                f"Known middleware: {sorted(registry.keys())}"
+            )
         chain.append(registry[name])
 
     chain.append(proxy_mw)
@@ -59,8 +68,8 @@ def build_chain(route: RouteConfig, logger_mw: Logger, proxy_mw: ProxyMiddleware
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    storage = _build_storage()
-    registry = _build_registry(storage)
+    storage = _build_storage(settings)
+    registry = _build_registry(settings, storage)
     logger_mw = Logger()
     proxy_mw = ProxyMiddleware()
     routes = load_routes()
