@@ -151,9 +151,10 @@ async def gateway(request: Request, path: str):
         request_id=str(uuid.uuid4()),
         method=request.method,
         path=full_path,
-        headers=request.headers.multi_items(),
+        headers=list(request.headers.items()),
         body=body,
         client_ip=client_ip,
+        metadata={"scheme": request.url.scheme},
     )
 
     matched_route = match_route(full_path, request.app.state.routes)

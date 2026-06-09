@@ -116,7 +116,11 @@ class CircuitBreaker(Middleware):
     async def on_response(self, context: MiddlewareContext) -> None:
         # No upstream call was made (request was aborted by this breaker, or by
         # an earlier middleware) - nothing to record.
-        if context.abort_response is not None and not context.metadata.get(PROBE_METADATA_KEY):
+        if (
+            context.abort_response is not None
+            and not context.metadata.get("upstream_attempted")
+            and not context.metadata.get(PROBE_METADATA_KEY)
+        ):
             return
 
         route_id = context.route_config.route_id

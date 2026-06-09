@@ -39,22 +39,32 @@ class ProxyMiddleware(Middleware):
             "upgrade",
             "proxy-authenticate",
             "proxy-authorization",
+            # not hop-by-hop, but dropped so httpx recomputes the correct length
+            # from the actual forwarded body (prevents Content-Length desync).
+            "content-length",
         }
 
-        forward_headers = {}
+        # Headers the gateway injects itself - drop any inbound copy so we don't
+        # emit duplicate, case-mismatched versions upstream. Host is overridden
+        # below, so it's dropped here too.
+        GATEWAY_OWNED = {"x-request-id", "x-forwarded-for", "x-forwarded-proto", "host"}
+
+        forward_headers = []
 
         for key, value in client_headers:
-            if key.lower() not in HOP_BY_HOP:
-                forward_headers[key] = value
+            lowered = key.lower()
+            if lowered in HOP_BY_HOP or lowered in GATEWAY_OWNED:
+                continue
+            forward_headers.append((key, value))
 
         # add standard headers expected by the server
-        forward_headers["X-Request-ID"] = curr_request.request_id
-        forward_headers["X-Forwarded-For"] = curr_request.client_ip
-        forward_headers["X-Forwarded-Proto"] = "https"
+        forward_headers.append(("X-Request-ID", curr_request.request_id))
+        forward_headers.append(("X-Forwarded-For", curr_request.client_ip))
+        forward_headers.append(("X-Forwarded-Proto", curr_request.metadata.get("scheme", "http")))
 
         # override Host with the upstream authority so upstream vhost routing
         # and TLS SNI target the upstream, not the gateway's own host.
-        forward_headers["host"] = urlparse(curr_route.upstream_URL).netloc
+        forward_headers.append(("host", urlparse(curr_route.upstream_URL).netloc))
 
         # actually sending the request upstream
         try:
@@ -69,15 +79,31 @@ class ProxyMiddleware(Middleware):
             )
 
         except httpx.TimeoutException:
+            context.metadata["upstream_attempted"] = True
             context.abort_response = {"status_code": 504, "headers": {}, "body": b"Request Timeout"}
 
             return MiddlewareResult.ABORT
 
         except httpx.ConnectError:
+            context.metadata["upstream_attempted"] = True
             context.abort_response = {
                 "status_code": 502,
                 "headers": {},
                 "body": b"Could Not Connect To Server",
+            }
+
+            return MiddlewareResult.ABORT
+
+        except httpx.TransportError:
+            # Catch-all for remaining transport failures (ReadError, WriteError,
+            # RemoteProtocolError, etc.) so they don't propagate past process() -
+            # otherwise on_response, metrics, and circuit-breaker failure counting
+            # are all bypassed.
+            context.metadata["upstream_attempted"] = True
+            context.abort_response = {
+                "status_code": 502,
+                "headers": {},
+                "body": b"Upstream Transport Error",
             }
 
             return MiddlewareResult.ABORT

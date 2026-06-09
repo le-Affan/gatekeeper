@@ -7,6 +7,7 @@ routes:
     middleware_names:
       - auth
       - rate-limiter
+      - circuit-breaker
     metadata: {}
 
   - route_id: 0002
@@ -17,4 +18,5 @@ routes:
     middleware_names:
       - auth
       - rate-limiter
+      - circuit-breaker
     metadata: {}
