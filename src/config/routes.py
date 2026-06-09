@@ -24,11 +24,9 @@ def load_routes() -> list[RouteConfig]:
             path_prefix=route["path_prefix"],
             upstream_URL=route["upstream_URL"],
             timeout=route["timeout"],
-            strip_prefix=route["strip_prefix"],
-            middleware_names=route["middleware_names"],
-            metadata=route["metadata"]
-            if route["metadata"]
-            else {},  # IMPORTANT: optional metadata handling is a bit weak here.
+            strip_prefix=route.get("strip_prefix", True),
+            middleware_names=route.get("middleware_names", []),
+            metadata=route.get("metadata") or {},
         )
         route_configs.append(route_config)
 
@@ -43,10 +41,13 @@ def match_route(
     curr_len = -1
     curr_config = None
 
+    # strip query string so it doesn't break the prefix comparison
+    incoming_route = incoming_route.split("?")[0]
+
     for x in possible_paths:
         path = x.path_prefix
 
-        if incoming_route.startswith(path) and len(path) > curr_len:
+        if (incoming_route == path or incoming_route.startswith(path + "/")) and len(path) > curr_len:
             curr_len = len(path)
             curr_config = x
 

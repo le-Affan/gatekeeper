@@ -19,11 +19,12 @@ class ProxyMiddleware(Middleware):
         curr_route = context.route_config
 
         # remove prefix if the route_config demands it
+        upstream_base = curr_route.upstream_URL.rstrip("/")
         if curr_route.strip_prefix:
             request_path = curr_request.path[len(curr_route.path_prefix) :]
-            final_upstream_URL = curr_route.upstream_URL + request_path
+            final_upstream_URL = upstream_base + request_path
         else:
-            final_upstream_URL = curr_route.upstream_URL + curr_request.path
+            final_upstream_URL = upstream_base + curr_request.path
 
         # remove hop-by-hop headers defined by RFC 2616 (world-wide standard)
         client_headers = curr_request.headers
@@ -59,6 +60,7 @@ class ProxyMiddleware(Middleware):
                 url=final_upstream_URL,
                 headers=forward_headers,
                 content=curr_request.body,
+                timeout=curr_route.timeout,
             )
 
         except httpx.TimeoutException:
@@ -79,10 +81,18 @@ class ProxyMiddleware(Middleware):
         end_time = time.perf_counter()
         curr_response_time = (end_time - start_time) * 1000
 
+        # httpx already decoded the body, so the upstream's encoding/length
+        # framing headers no longer apply - drop them before forwarding.
+        response_headers = {
+            key: value
+            for key, value in response.headers.items()
+            if key.lower() not in {"content-encoding", "content-length", "transfer-encoding"}
+        }
+
         # building the response object
         context.response = ProxyResponse(
             request_id=curr_request.request_id,
-            headers=dict(response.headers),
+            headers=response_headers,
             body=response.content,
             status_code=response.status_code,
             response_time=curr_response_time,

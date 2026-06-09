@@ -14,6 +14,7 @@ Key Components:
   and falling back to the client's IP address, then runs the configured algorithm's Lua script
   against Redis to decide whether the request is allowed.
 """
+import hashlib
 import time
 import uuid
 
@@ -133,26 +134,32 @@ class RateLimiter(Middleware):
         if not identifier:
             identifier = context.request.client_ip
 
-        # creating namespaced key (namespaced so it can't collide with e.g. circuit-breaker keys)
-        key = f"rate-limiter:{self.algorithm}:{identifier}"
+        # creating namespaced key (namespaced so it can't collide with e.g. circuit-breaker keys).
+        # identifier is hashed so raw API keys / tokens never appear in the Redis keyspace.
+        hashed_identifier = hashlib.sha256(identifier.encode()).hexdigest()
+        key = f"rate-limiter:{self.algorithm}:{hashed_identifier}"
 
         now = time.time()
 
-        if self.algorithm == "token_bucket":
-            ttl = int(self.capacity / self.refill_rate) + 1 if self.refill_rate > 0 else 60
-            allowed = await self.storage.execute_script(
-                TOKEN_BUCKET_SCRIPT,
-                [key],
-                [self.capacity, self.refill_rate, now, 1, ttl],
-            )
-        else:  # sliding_window
-            ttl = self.window_seconds + 1
-            request_id = f"{now}:{uuid.uuid4()}"
-            allowed = await self.storage.execute_script(
-                SLIDING_WINDOW_SCRIPT,
-                [key],
-                [now, self.window_seconds, self.limit, request_id, ttl],
-            )
+        try:
+            if self.algorithm == "token_bucket":
+                ttl = int(self.capacity / self.refill_rate) + 1 if self.refill_rate > 0 else 60
+                allowed = await self.storage.execute_script(
+                    TOKEN_BUCKET_SCRIPT,
+                    [key],
+                    [self.capacity, self.refill_rate, now, 1, ttl],
+                )
+            else:  # sliding_window
+                ttl = self.window_seconds + 1
+                request_id = f"{now}:{uuid.uuid4()}"
+                allowed = await self.storage.execute_script(
+                    SLIDING_WINDOW_SCRIPT,
+                    [key],
+                    [now, self.window_seconds, self.limit, request_id, ttl],
+                )
+        except Exception:
+            # Fail open: a storage/Redis outage must not 500 every request.
+            return MiddlewareResult.PASS
 
         if int(allowed) == 1:
             return MiddlewareResult.PASS

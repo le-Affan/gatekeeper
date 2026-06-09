@@ -1,9 +1,10 @@
+import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Dict
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request, Response, WebSocket
 
 from src.analytics.collector import AnalyticsCollector, RequestRecord
 from src.analytics.dashboard import DashboardManager
@@ -72,6 +73,7 @@ def build_chain(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logging.basicConfig(level=settings.log_level, format="%(message)s")
     storage = _build_storage(settings)
     registry = _build_registry(settings, storage)
     collector = AnalyticsCollector(settings.metrics_window_seconds)

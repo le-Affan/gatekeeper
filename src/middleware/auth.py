@@ -1,3 +1,8 @@
+# NOTE: API keys must be stored in Redis as sha256 hashes, not raw values.
+# Key format: auth:apikey:<hashlib.sha256(api_key.encode()).hexdigest()>
+# Any seeding script, init container, or CLI that registers keys must hash first.
+# Storing raw keys will cause all auth lookups to silently fail (404 → 403).
+
 """
 Auth Middleware
 
@@ -6,6 +11,8 @@ Supports optional auth (require_auth=False) where missing keys are allowed
 through as unauthenticated requests, and mandatory auth where a missing or
 invalid key is rejected.
 """
+import hashlib
+
 from src.middleware.base import Middleware
 from src.models import MiddlewareContext, MiddlewareResult
 
@@ -43,7 +50,8 @@ class Auth(Middleware):
 
         # Key supplied - look it up in storage. Namespaced so it can't collide
         # with rate-limiter / circuit-breaker keys in the same Redis instance.
-        redis_key = f"{REDIS_KEY_PREFIX}:{api_key}"
+        hashed_api_key = hashlib.sha256(api_key.encode()).hexdigest()
+        redis_key = f"{REDIS_KEY_PREFIX}:{hashed_api_key}"
         key_id = await self.storage.get_value(redis_key)
 
         if key_id is None:
