@@ -201,8 +201,13 @@ async def gateway(request: Request, path: str):
         )
 
     resp = context.response
-    return Response(
+    response = Response(
         content=resp.body,
         status_code=resp.status_code,
-        headers=resp.headers,
     )
+    # resp.headers is a list of (name, value) tuples; append each so repeated
+    # headers (e.g. multiple Set-Cookie) all reach the client instead of being
+    # collapsed by a dict.
+    for name, value in resp.headers:
+        response.headers.append(name, value)
+    return response

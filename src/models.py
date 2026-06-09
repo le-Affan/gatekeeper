@@ -1,7 +1,7 @@
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class CircuitState(Enum):
@@ -30,7 +30,7 @@ class ProxyRequest:
 @dataclass
 class ProxyResponse:
     request_id: str
-    headers: Dict[str, str]
+    headers: List[Tuple[str, str]]
     body: bytes
     status_code: int
     response_time: float

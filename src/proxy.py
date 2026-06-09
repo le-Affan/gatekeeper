@@ -83,11 +83,13 @@ class ProxyMiddleware(Middleware):
 
         # httpx already decoded the body, so the upstream's encoding/length
         # framing headers no longer apply - drop them before forwarding.
-        response_headers = {
-            key: value
-            for key, value in response.headers.items()
+        # Use multi_items() and a list of tuples so repeated headers
+        # (e.g. multiple Set-Cookie) are preserved instead of collapsed.
+        response_headers = [
+            (key, value)
+            for key, value in response.headers.multi_items()
             if key.lower() not in {"content-encoding", "content-length", "transfer-encoding"}
-        }
+        ]
 
         # building the response object
         context.response = ProxyResponse(

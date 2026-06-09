@@ -20,7 +20,7 @@ class GatekeeperSettings(BaseSettings):
     enable_prometheus: bool = False
 
     # Auth
-    auth_require_auth: bool = True
+    auth_require_auth: bool = False
 
     # Rate limiting
     rate_limit_algorithm: str = "sliding_window"
