@@ -25,10 +25,8 @@ def _build_storage():
 
 
 def _build_registry(storage) -> Dict[str, Any]:
-    require_auth = os.environ.get("REQUIRE_AUTH", "true").lower() != "false"
-
     return {
-        "auth": Auth(require_auth=require_auth, storage=storage),
+        "auth": Auth(require_auth=True, storage=storage),
         "rate-limiter": RateLimiter(
             algorithm=os.environ.get("RATE_LIMIT_ALGORITHM", "sliding_window"),
             api_key_headers=["x-api-key", "authorization", "api-key", "apikey"],
