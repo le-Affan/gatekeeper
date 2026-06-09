@@ -65,6 +65,14 @@ async def lifespan(app: FastAPI):
     proxy_mw = ProxyMiddleware()
     routes = load_routes()
 
+    for route in routes:
+        for name in route.middleware_names:
+            if name not in registry:
+                raise ValueError(
+                    f"Route '{route.route_id}' references unknown middleware '{name}'. "
+                    f"Known middleware: {sorted(registry.keys())}"
+                )
+
     app.state.storage = storage
     app.state.registry = registry
     app.state.logger_mw = logger_mw
@@ -79,8 +87,6 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 _SUPPORTED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
-
-_MANAGEMENT_PATHS = {"/gatekeeper/health", "/gatekeeper/metrics", "/gatekeeper/routes"}
 
 
 @app.get("/gatekeeper/health")
