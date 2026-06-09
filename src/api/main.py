@@ -6,6 +6,7 @@ from typing import Any, Dict
 from fastapi import FastAPI, Request, Response
 
 from src.analytics.collector import AnalyticsCollector, RequestRecord
+from src.analytics.dashboard import DashboardManager
 from src.config.routes import load_routes, match_route
 from src.config.settings import GatekeeperSettings
 from src.middleware import MiddlewareChain
@@ -19,6 +20,7 @@ from src.storage.in_memory import InMemoryStorage
 from src.storage.redis_store import RedisStorage
 
 settings = GatekeeperSettings()
+dashboard_manager = DashboardManager()
 
 
 def _build_storage(s: GatekeeperSettings):
@@ -126,6 +128,11 @@ async def routes_info(request: Request):
 @app.get("/gatekeeper/metrics")
 async def metrics(request: Request):
     return request.app.state.collector.get_summary()
+
+
+@app.websocket("/gatekeeper/dashboard")
+async def dashboard(websocket: WebSocket):
+    await dashboard_manager.connect(websocket, websocket.app.state.collector)
 
 
 @app.api_route("/{path:path}", methods=_SUPPORTED_METHODS)
