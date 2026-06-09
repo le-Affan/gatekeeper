@@ -20,7 +20,7 @@ class ProxyRequest:
     request_id: str
     method: str
     path: str
-    headers: Dict[str, str]
+    headers: List[Tuple[str, str]]
     body: bytes
     client_ip: str
     timestamp: float = field(default_factory=time.time)

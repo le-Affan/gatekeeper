@@ -1,4 +1,5 @@
 import time
+from urllib.parse import urlparse
 
 import httpx
 
@@ -42,7 +43,7 @@ class ProxyMiddleware(Middleware):
 
         forward_headers = {}
 
-        for key, value in client_headers.items():
+        for key, value in client_headers:
             if key.lower() not in HOP_BY_HOP:
                 forward_headers[key] = value
 
@@ -50,6 +51,10 @@ class ProxyMiddleware(Middleware):
         forward_headers["X-Request-ID"] = curr_request.request_id
         forward_headers["X-Forwarded-For"] = curr_request.client_ip
         forward_headers["X-Forwarded-Proto"] = "https"
+
+        # override Host with the upstream authority so upstream vhost routing
+        # and TLS SNI target the upstream, not the gateway's own host.
+        forward_headers["host"] = urlparse(curr_route.upstream_URL).netloc
 
         # actually sending the request upstream
         try:

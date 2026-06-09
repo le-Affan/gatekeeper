@@ -151,7 +151,7 @@ async def gateway(request: Request, path: str):
         request_id=str(uuid.uuid4()),
         method=request.method,
         path=full_path,
-        headers=dict(request.headers),
+        headers=request.headers.multi_items(),
         body=body,
         client_ip=client_ip,
     )

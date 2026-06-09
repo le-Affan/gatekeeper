@@ -30,7 +30,7 @@ class Auth(Middleware):
         return "auth"
 
     async def process(self, context: MiddlewareContext) -> MiddlewareResult:
-        api_key = context.request.headers.get(API_KEY_HEADER)
+        api_key = dict(context.request.headers).get(API_KEY_HEADER)
 
         if not api_key:
             if self.require_auth:

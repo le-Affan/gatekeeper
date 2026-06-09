@@ -124,9 +124,10 @@ class RateLimiter(Middleware):
     async def process(self, context: MiddlewareContext) -> MiddlewareResult:
 
         # identify client API Key else fallback to IP Address
+        request_headers = dict(context.request.headers)
         identifier = None
         for header in self.api_key_headers:
-            identifier = context.request.headers.get(header)
+            identifier = request_headers.get(header)
 
             if identifier:
                 break
