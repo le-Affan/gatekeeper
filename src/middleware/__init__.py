@@ -1,4 +1,4 @@
-from base import Middleware
+from src.middleware.base import Middleware
 
 from src.models import MiddlewareContext, MiddlewareResult
 

@@ -1,8 +1,11 @@
+from pathlib import Path
 from typing import Optional
 
 import yaml
 
 from src.models import RouteConfig
+
+_ROUTES_FILE = Path(__file__).parent / "routes.yaml"
 
 
 # function to load all the routes parsed from the YAML file.
@@ -10,7 +13,7 @@ from src.models import RouteConfig
 def load_routes() -> list[RouteConfig]:
 
     # parse the YAML file to extract all routes
-    with open("routes.yaml", "r") as f:
+    with open(_ROUTES_FILE, "r") as f:
         routes = yaml.safe_load(f)["routes"]
 
     route_configs = []

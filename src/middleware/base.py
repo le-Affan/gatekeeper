@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 
-from models import MiddlewareContext, MiddlewareResult
+from src.models import MiddlewareContext, MiddlewareResult
 
 
 class Middleware(ABC):
