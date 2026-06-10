@@ -29,6 +29,7 @@ class GatekeeperSettings(BaseSettings):
     rate_limit_refill_rate: float = 10.0
     rate_limit_limit: int = 100
     rate_limit_window_seconds: int = 60
+    rate_limit_trust_forwarded_for: bool = False
 
     # Circuit breaker
     cb_failure_threshold: int = 5

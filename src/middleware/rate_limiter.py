@@ -15,12 +15,15 @@ Key Components:
   against Redis to decide whether the request is allowed.
 """
 import hashlib
+import logging
 import time
 import uuid
 
 from src.middleware.base import Middleware
 from src.models import MiddlewareContext, MiddlewareResult
 from src.storage.base import Storage
+
+logger = logging.getLogger("gatekeeper.rate_limiter")
 
 # Lua script for token bucket algorithm.
 # KEYS[1] = bucket key
@@ -33,9 +36,14 @@ TOKEN_BUCKET_SCRIPT = """
 local bucket_key = KEYS[1]
 local capacity = tonumber(ARGV[1])
 local refill_rate = tonumber(ARGV[2])
-local now = tonumber(ARGV[3])
 local requested = tonumber(ARGV[4])
 local ttl = tonumber(ARGV[5])
+
+-- Use the Redis server clock as the single source of truth so multiple
+-- gateway instances sharing this Redis cannot corrupt refill math via wall-clock
+-- skew. ARGV[3] (the caller's clock) is ignored on the Redis path.
+local t = redis.call('TIME')
+local now = tonumber(t[1]) + tonumber(t[2]) / 1000000
 
 local bucket = redis.call('HMGET', bucket_key, 'tokens', 'last_refill')
 local tokens = tonumber(bucket[1])
@@ -71,11 +79,15 @@ return allowed
 # ARGV[5] = ttl (seconds, used to expire idle windows)
 SLIDING_WINDOW_SCRIPT = """
 local window_key = KEYS[1]
-local now = tonumber(ARGV[1])
 local window = tonumber(ARGV[2])
 local limit = tonumber(ARGV[3])
 local request_id = ARGV[4]
 local ttl = tonumber(ARGV[5])
+
+-- Redis server clock is authoritative (see token-bucket script); ARGV[1] is
+-- ignored on the Redis path so multi-instance clock skew cannot shift the window.
+local t = redis.call('TIME')
+local now = tonumber(t[1]) + tonumber(t[2]) / 1000000
 
 -- drop entries older than the window
 redis.call('ZREMRANGEBYSCORE', window_key, '-inf', now - window)
@@ -104,6 +116,7 @@ class RateLimiter(Middleware):
         refill_rate: float = 1.0,
         limit: int = 10,
         window_seconds: int = 60,
+        trust_forwarded_for: bool = False,
     ):
         self.storage = storage
         self.algorithm = algorithm
@@ -116,6 +129,13 @@ class RateLimiter(Middleware):
         # sliding window config
         self.limit = limit
         self.window_seconds = window_seconds
+
+        # When true, derive client identity from the left-most X-Forwarded-For
+        # entry rather than the immediate peer IP. Required when the gateway sits
+        # behind a trusted proxy/LB, otherwise every client behind that LB shares
+        # one bucket. Default false (only trust XFF when the deployment guarantees
+        # a sanitizing proxy in front).
+        self.trust_forwarded_for = trust_forwarded_for
 
     @property
     def name(self) -> str:
@@ -133,7 +153,14 @@ class RateLimiter(Middleware):
                 break
 
         if not identifier:
-            identifier = context.request.client_ip
+            if self.trust_forwarded_for:
+                # Left-most XFF entry is the original client when a trusted proxy
+                # sits in front; fall back to the peer IP if the header is absent.
+                xff = request_headers.get("x-forwarded-for")
+                if xff:
+                    identifier = xff.split(",")[0].strip()
+            if not identifier:
+                identifier = context.request.client_ip
 
         # creating namespaced key (namespaced so it can't collide with e.g. circuit-breaker keys).
         # identifier is hashed so raw API keys / tokens never appear in the Redis keyspace.
@@ -144,7 +171,11 @@ class RateLimiter(Middleware):
 
         try:
             if self.algorithm == "token_bucket":
-                ttl = int(self.capacity / self.refill_rate) + 1 if self.refill_rate > 0 else 60
+                # Floor the TTL so a bucket is never evicted before it would have
+                # refilled to capacity (premature eviction resets to full = silent
+                # under-limiting under low-refill / small-capacity configs).
+                refill_ttl = int(self.capacity / self.refill_rate) + 1 if self.refill_rate > 0 else 60
+                ttl = max(60, refill_ttl)
                 allowed = await self.storage.execute_script(
                     TOKEN_BUCKET_SCRIPT,
                     [key],
@@ -159,7 +190,11 @@ class RateLimiter(Middleware):
                     [now, self.window_seconds, self.limit, request_id, ttl],
                 )
         except Exception:
-            # Fail open: a storage/Redis outage must not 500 every request.
+            # Fail open: a storage/Redis outage must not 500 every request. But
+            # make it observable - a silent global disable of rate limiting is a
+            # DoS exposure, so log it and flag the context for the access log.
+            logger.warning("rate limiter storage error; failing open", exc_info=True)
+            context.metadata["rate_limiter_error"] = True
             return MiddlewareResult.PASS
 
         if int(allowed) == 1:

@@ -48,6 +48,7 @@ def _build_registry(s: GatekeeperSettings, storage) -> Dict[str, Any]:
             refill_rate=s.rate_limit_refill_rate,
             limit=s.rate_limit_limit,
             window_seconds=s.rate_limit_window_seconds,
+            trust_forwarded_for=s.rate_limit_trust_forwarded_for,
         ),
         "circuit-breaker": CircuitBreaker(
             failure_threshold=s.cb_failure_threshold,
@@ -141,7 +142,35 @@ CIRCUIT_OPEN = Gauge(
 
 @app.get("/gatekeeper/health")
 async def health():
+    # Liveness only: process is up and serving. Intentionally does NOT touch
+    # dependencies - use /gatekeeper/ready for dependency health.
     return {"status": "ok"}
+
+
+@app.get("/gatekeeper/ready")
+async def ready(request: Request):
+    # Readiness: verifies the configured storage backend is reachable. When no
+    # redis_url is set the gateway uses in-memory storage and is always ready.
+    if settings.redis_url:
+        storage = getattr(request.app.state, "storage", None)
+        if storage is None:
+            return Response(
+                content=b'{"status": "starting"}',
+                status_code=503,
+                media_type="application/json",
+            )
+        try:
+            await storage.health_check()
+        except Exception:
+            logging.getLogger("gatekeeper.ready").warning(
+                "readiness check failed: storage unreachable", exc_info=True
+            )
+            return Response(
+                content=b'{"status": "unavailable", "storage": "unreachable"}',
+                status_code=503,
+                media_type="application/json",
+            )
+    return {"status": "ready"}
 
 
 @app.get("/gatekeeper/routes")

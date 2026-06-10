@@ -29,3 +29,9 @@ class Storage(ABC):
         self, script: str, keys: list[str], args: list[Any]
     ) -> Any:
         pass
+
+    # Liveness/connectivity probe for readiness checks. Must raise if the
+    # backing store is unreachable. Default issues a harmless read; backends
+    # with a cheaper native ping should override.
+    async def health_check(self) -> None:
+        await self.get_value("gatekeeper:health-probe")

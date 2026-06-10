@@ -12,9 +12,12 @@ through as unauthenticated requests, and mandatory auth where a missing or
 invalid key is rejected.
 """
 import hashlib
+import logging
 
 from src.middleware.base import Middleware
 from src.models import MiddlewareContext, MiddlewareResult
+
+logger = logging.getLogger("gatekeeper.auth")
 
 API_KEY_HEADER = "x-api-key"
 REDIS_KEY_PREFIX = "auth:apikey"
@@ -52,7 +55,23 @@ class Auth(Middleware):
         # with rate-limiter / circuit-breaker keys in the same Redis instance.
         hashed_api_key = hashlib.sha256(api_key.encode()).hexdigest()
         redis_key = f"{REDIS_KEY_PREFIX}:{hashed_api_key}"
-        key_id = await self.storage.get_value(redis_key)
+        try:
+            key_id = await self.storage.get_value(redis_key)
+        except Exception:
+            # Storage outage during lookup. Fail closed when auth is mandatory -
+            # we must not admit an unverified key - otherwise let the request
+            # through as unauthenticated (auth is optional on this route).
+            logger.warning("auth storage lookup failed", exc_info=True)
+            context.metadata["auth_error"] = True
+            if self.require_auth:
+                context.abort_response = {
+                    "status_code": 503,
+                    "headers": {"Retry-After": "5"},
+                    "body": b"Service Unavailable: auth backend unavailable",
+                }
+                return MiddlewareResult.ABORT
+            context.metadata["authenticated"] = False
+            return MiddlewareResult.PASS
 
         if key_id is None:
             # Key was presented but isn't registered - caller authenticated

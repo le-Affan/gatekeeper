@@ -46,20 +46,34 @@ class ProxyMiddleware(Middleware):
 
         # Headers the gateway injects itself - drop any inbound copy so we don't
         # emit duplicate, case-mismatched versions upstream. Host is overridden
-        # below, so it's dropped here too.
-        GATEWAY_OWNED = {"x-request-id", "x-forwarded-for", "x-forwarded-proto", "host"}
+        # below, so it's dropped here too. x-forwarded-for is handled separately
+        # (appended, not replaced) so the upstream sees the full client chain.
+        GATEWAY_OWNED = {"x-request-id", "x-forwarded-proto", "host"}
 
         forward_headers = []
+        inbound_xff = None
 
         for key, value in client_headers:
             lowered = key.lower()
+            if lowered == "x-forwarded-for":
+                # Capture the existing chain; do not forward the raw inbound copy.
+                inbound_xff = value if inbound_xff is None else f"{inbound_xff}, {value}"
+                continue
             if lowered in HOP_BY_HOP or lowered in GATEWAY_OWNED:
                 continue
             forward_headers.append((key, value))
 
+        # Append this hop's immediate peer to the existing X-Forwarded-For chain
+        # instead of clobbering it, so a downstream proxy/LB's recorded clients
+        # are preserved.
+        if inbound_xff:
+            xff = f"{inbound_xff}, {curr_request.client_ip}"
+        else:
+            xff = curr_request.client_ip
+
         # add standard headers expected by the server
         forward_headers.append(("X-Request-ID", curr_request.request_id))
-        forward_headers.append(("X-Forwarded-For", curr_request.client_ip))
+        forward_headers.append(("X-Forwarded-For", xff))
         forward_headers.append(("X-Forwarded-Proto", curr_request.metadata.get("scheme", "http")))
 
         # override Host with the upstream authority so upstream vhost routing
@@ -78,6 +92,12 @@ class ProxyMiddleware(Middleware):
                 timeout=curr_route.timeout,
             )
 
+            # Read the body inside the try: httpx may raise DecodingError here
+            # (malformed Content-Encoding from upstream), which is NOT a
+            # TransportError and would otherwise escape process() uncaught.
+            body = response.content
+            end_time = time.perf_counter()
+
         except httpx.TimeoutException:
             context.metadata["upstream_attempted"] = True
             context.abort_response = {"status_code": 504, "headers": {}, "body": b"Request Timeout"}
@@ -94,22 +114,22 @@ class ProxyMiddleware(Middleware):
 
             return MiddlewareResult.ABORT
 
-        except httpx.TransportError:
-            # Catch-all for remaining transport failures (ReadError, WriteError,
-            # RemoteProtocolError, etc.) so they don't propagate past process() -
-            # otherwise on_response, metrics, and circuit-breaker failure counting
-            # are all bypassed.
+        except (httpx.HTTPError, httpx.InvalidURL, httpx.CookieConflict):
+            # Catch-all for every remaining httpx failure: transport errors
+            # (ReadError/WriteError/RemoteProtocolError/UnsupportedProtocol),
+            # DecodingError, and the non-HTTPError siblings InvalidURL /
+            # CookieConflict. None of these may propagate past process(), or
+            # on_response, metrics, and circuit-breaker counting are all bypassed.
             context.metadata["upstream_attempted"] = True
             context.abort_response = {
                 "status_code": 502,
                 "headers": {},
-                "body": b"Upstream Transport Error",
+                "body": b"Upstream Error",
             }
 
             return MiddlewareResult.ABORT
 
         # measuring response time
-        end_time = time.perf_counter()
         curr_response_time = (end_time - start_time) * 1000
 
         # httpx already decoded the body, so the upstream's encoding/length
@@ -126,7 +146,7 @@ class ProxyMiddleware(Middleware):
         context.response = ProxyResponse(
             request_id=curr_request.request_id,
             headers=response_headers,
-            body=response.content,
+            body=body,
             status_code=response.status_code,
             response_time=curr_response_time,
             from_cache=False,

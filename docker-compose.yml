@@ -5,6 +5,10 @@ networks:
 services:
   redis:
     image: redis:7-alpine
+    # Bound memory with an eviction policy that only drops keys carrying a TTL
+    # (every gatekeeper key sets one), so rate-limit/auth state can't OOM Redis.
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-lru"]
+    restart: unless-stopped
     networks:
       - gatekeeper-net
     healthcheck:
@@ -12,11 +16,16 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 320M
 
   gatekeeper:
     build:
       context: .
       dockerfile: Dockerfile
+    restart: unless-stopped
     networks:
       - gatekeeper-net
     ports:
@@ -44,38 +53,68 @@ services:
       RATE_LIMIT_REFILL_RATE: 10.0
       RATE_LIMIT_LIMIT: 100
       RATE_LIMIT_WINDOW_SECONDS: 60
+      # No trusted proxy in front of the gateway in this stack, so identify
+      # clients by peer IP. Set true only behind a sanitizing proxy/LB.
+      RATE_LIMIT_TRUST_FORWARDED_FOR: "false"
 
       # Circuit breaker
       CB_FAILURE_THRESHOLD: 5
       CB_WINDOW_SECONDS: 60.0
       CB_RECOVERY_TIMEOUT: 30.0
       CB_SUCCESS_THRESHOLD: 1
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   mock-upstream:
     image: mendhak/http-https-echo:latest
+    restart: unless-stopped
     networks:
       - gatekeeper-net
     environment:
       HTTP_PORT: 8000
+    deploy:
+      resources:
+        limits:
+          memory: 128M
 
   prometheus:
     image: prom/prometheus:latest
+    restart: unless-stopped
     networks:
       - gatekeeper-net
+    # Bound to loopback: monitoring UIs are not exposed on all host interfaces.
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
     depends_on:
       - gatekeeper
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 
   grafana:
     image: grafana/grafana:latest
+    restart: unless-stopped
     networks:
       - gatekeeper-net
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
+    environment:
+      # Admin password sourced from the host env; falls back to a non-default
+      # local value. Anonymous access stays disabled.
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-gatekeeper-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
     depends_on:
       - prometheus
+    deploy:
+      resources:
+        limits:
+          memory: 256M

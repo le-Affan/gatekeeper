@@ -29,3 +29,7 @@ class RedisStorage(Storage):
         self, script: str, keys: list[str], args: list[Any]
     ) -> Any:
         return await self.redis.eval(script, len(keys), *keys, *args)
+
+    async def health_check(self) -> None:
+        # Native PING is cheaper than a key read and raises on connectivity loss.
+        await self.redis.ping()
