@@ -5,6 +5,13 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict
 
 from fastapi import FastAPI, Request, Response, WebSocket
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    Counter,
+    Gauge,
+    Histogram,
+    generate_latest,
+)
 
 from src.analytics.collector import AnalyticsCollector, RequestRecord
 from src.analytics.dashboard import DashboardManager
@@ -105,6 +112,32 @@ app = FastAPI(lifespan=lifespan)
 
 _SUPPORTED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 
+REQUEST_COUNT = Counter(
+    "gatekeeper_requests_total",
+    "Total number of requests processed",
+    ["route_id", "status_code"],
+)
+REQUEST_DURATION = Histogram(
+    "gatekeeper_request_duration_seconds",
+    "Total request duration in seconds",
+    ["route_id"],
+)
+UPSTREAM_DURATION = Histogram(
+    "gatekeeper_upstream_duration_seconds",
+    "Upstream response duration in seconds",
+    ["route_id"],
+)
+RATE_LIMITED_COUNT = Counter(
+    "gatekeeper_rate_limited_total",
+    "Total number of requests rejected by the rate limiter",
+    ["route_id"],
+)
+CIRCUIT_OPEN = Gauge(
+    "gatekeeper_circuit_open",
+    "Whether the circuit breaker was open for the route on the last request (1=open, 0=closed)",
+    ["route_id"],
+)
+
 
 @app.get("/gatekeeper/health")
 async def health():
@@ -130,6 +163,13 @@ async def routes_info(request: Request):
 @app.get("/gatekeeper/metrics")
 async def metrics(request: Request):
     return request.app.state.collector.get_summary()
+
+
+@app.get("/metrics")
+async def prometheus_metrics():
+    if not settings.enable_prometheus:
+        return Response(content=b"Not Found", status_code=404)
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.websocket("/gatekeeper/dashboard")
@@ -181,17 +221,30 @@ async def gateway(request: Request, path: str):
         status_code = 500
         upstream_latency_ms = 0.0
 
+    route_id = str(matched_route.route_id)
+    total_latency_ms = context.metadata.get("total_latency_ms") or 0.0
+    rate_limited = context.metadata.get("rate_limited", False)
+    circuit_open = context.metadata.get("circuit_state") == "open"
+
     request.app.state.collector.record(
         RequestRecord(
             timestamp=time.monotonic(),
-            route_id=str(matched_route.route_id),
+            route_id=route_id,
             status_code=status_code,
-            total_latency_ms=context.metadata.get("total_latency_ms") or 0.0,
+            total_latency_ms=total_latency_ms,
             upstream_latency_ms=upstream_latency_ms,
-            rate_limited=context.metadata.get("rate_limited", False),
-            circuit_open=context.metadata.get("circuit_state") == "open",
+            rate_limited=rate_limited,
+            circuit_open=circuit_open,
         )
     )
+
+    if settings.enable_prometheus:
+        REQUEST_COUNT.labels(route_id=route_id, status_code=str(status_code)).inc()
+        REQUEST_DURATION.labels(route_id=route_id).observe(total_latency_ms / 1000)
+        UPSTREAM_DURATION.labels(route_id=route_id).observe(upstream_latency_ms / 1000)
+        if rate_limited:
+            RATE_LIMITED_COUNT.labels(route_id=route_id).inc()
+        CIRCUIT_OPEN.labels(route_id=route_id).set(1 if circuit_open else 0)
 
     if context.abort_response is not None:
         abort = context.abort_response

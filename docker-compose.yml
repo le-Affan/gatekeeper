@@ -1,0 +1,81 @@
+networks:
+  gatekeeper-net:
+    driver: bridge
+
+services:
+  redis:
+    image: redis:7-alpine
+    networks:
+      - gatekeeper-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  gatekeeper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    networks:
+      - gatekeeper-net
+    ports:
+      - "8080:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      # Storage
+      REDIS_URL: redis://redis:6379/0
+
+      # Gateway
+      GATEWAY_PORT: 8080
+      LOG_LEVEL: INFO
+      METRICS_WINDOW_SECONDS: 60
+      ENABLE_PROMETHEUS: "true"
+
+      # Auth
+      AUTH_REQUIRE_AUTH: "false"
+
+      # Rate limiting
+      RATE_LIMIT_ALGORITHM: sliding_window
+      RATE_LIMIT_API_KEY_HEADERS: '["x-api-key","authorization","api-key","apikey"]'
+      RATE_LIMIT_CAPACITY: 100
+      RATE_LIMIT_REFILL_RATE: 10.0
+      RATE_LIMIT_LIMIT: 100
+      RATE_LIMIT_WINDOW_SECONDS: 60
+
+      # Circuit breaker
+      CB_FAILURE_THRESHOLD: 5
+      CB_WINDOW_SECONDS: 60.0
+      CB_RECOVERY_TIMEOUT: 30.0
+      CB_SUCCESS_THRESHOLD: 1
+
+  mock-upstream:
+    image: mendhak/http-https-echo:latest
+    networks:
+      - gatekeeper-net
+    environment:
+      HTTP_PORT: 8000
+
+  prometheus:
+    image: prom/prometheus:latest
+    networks:
+      - gatekeeper-net
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - gatekeeper
+
+  grafana:
+    image: grafana/grafana:latest
+    networks:
+      - gatekeeper-net
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
