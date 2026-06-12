@@ -1,6 +1,5 @@
 ![GateKeeper](docs/banner_image1.png)
 
-# GateKeeper
 
 A self-hostable API gateway built with FastAPI. Sits in front of your services and handles rate limiting, circuit breaking, API key auth, structured logging, and live analytics — without touching upstream code.
 
