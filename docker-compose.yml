@@ -72,6 +72,8 @@ services:
     restart: unless-stopped
     networks:
       - gatekeeper-net
+    ports:
+      - "8000:8000"
     environment:
       HTTP_PORT: 8000
     deploy:
