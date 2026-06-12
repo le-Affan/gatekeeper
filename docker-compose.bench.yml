@@ -1,0 +1,9 @@
+services:
+  gatekeeper:
+    environment:
+      # Benchmark-only override: raise the rate limit far above anything
+      # Benchmarks 1-3 can realistically generate in 30s, so throughput
+      # measurements aren't dominated by 429 rejections. Production default
+      # (RATE_LIMIT_LIMIT=100) lives in docker-compose.yml and is restored
+      # before Benchmark 4.
+      RATE_LIMIT_LIMIT: 1000000
