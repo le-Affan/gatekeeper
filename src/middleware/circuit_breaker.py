@@ -25,6 +25,11 @@ class _RouteState:
     probe_in_flight: bool = False
     success_count: int = 0
     lock: Lock = field(default_factory=Lock)
+    # Bumped on every CLOSED <-> OPEN/RECOVERY transition. Lets on_response
+    # detect requests that were dispatched during a previous CLOSED epoch and
+    # only resolve long after the breaker has since tripped and recovered -
+    # such stale failures must not re-trip the now-healthy circuit.
+    generation: int = 0
 
 
 class CircuitBreaker(Middleware):
@@ -67,8 +72,11 @@ class CircuitBreaker(Middleware):
 
         async with route_state.lock:
             if route_state.state == CircuitState.CLOSED:
-                # Normal operation: let the request through.
+                # Normal operation: let the request through. Stamp the current
+                # generation so on_response can tell whether this request's
+                # eventual failure belongs to this CLOSED epoch or a stale one.
                 allow = True
+                context.metadata["circuit_generation"] = route_state.generation
 
             elif route_state.state == CircuitState.OPEN:
                 if now - route_state.opened_at >= self.recovery_timeout:
@@ -140,6 +148,14 @@ class CircuitBreaker(Middleware):
                     route_state.probe_in_flight = False
                     route_state.success_count = 0
                 elif route_state.state == CircuitState.CLOSED:
+                    # A request dispatched during a now-superseded CLOSED epoch
+                    # (e.g. it was hung on the prior fault for the whole route
+                    # timeout) resolving after the breaker already tripped and
+                    # recovered. Counting it here would immediately re-trip the
+                    # freshly-recovered circuit on stale data - discard it.
+                    if context.metadata.get("circuit_generation") != route_state.generation:
+                        return
+
                     # Record this failure in the rolling window, prune stale
                     # entries, and trip CLOSED -> OPEN if the threshold is met
                     # within the configured window.
@@ -149,6 +165,7 @@ class CircuitBreaker(Middleware):
                         route_state.state = CircuitState.OPEN
                         route_state.opened_at = now
                         route_state.failure_timestamps.clear()
+                        route_state.generation += 1
                 # If state is OPEN and this wasn't a probe, the request was
                 # aborted earlier (handled by the early-return above) - nothing to do.
 
@@ -162,6 +179,7 @@ class CircuitBreaker(Middleware):
                         route_state.state = CircuitState.CLOSED
                         route_state.failure_timestamps.clear()
                         route_state.success_count = 0
+                        route_state.generation += 1
                     # else: stay in RECOVERY: a subsequent request will be
                     # elected as the next probe (probe_in_flight is now False).
                 elif route_state.state == CircuitState.CLOSED:
