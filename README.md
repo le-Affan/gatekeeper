@@ -1,208 +1,220 @@
-# Gatekeeper
+![GateKeeper](docs/banner_image1.png)
 
-A self-hostable reverse proxy and API gateway built from scratch in Python writing each line of code by hand. Sits in front of any backend service and adds traffic management — rate limiting, circuit breaking, request routing, analytics, and middleware composition without modifying the upstream service at all.
+# GateKeeper
 
-> Built by Affan Shaikh as a systems project. Every line written from first principles.
-
----
-
-## What it does
-
-- **Reverse proxies** HTTP traffic to configured upstream services
-- **Rate limits** requests per client using token bucket or sliding window algorithms
-- **Circuit breaks** failing upstreams to prevent cascade failures
-- **Composes middleware** in an ordered, pluggable chain
-- **Logs** every request as structured JSON
-- **Exposes analytics** via a REST API and live WebSocket dashboard
-- **Validates API keys** with Redis-backed auth middleware
+A self-hostable API gateway built with FastAPI. Sits in front of your services and handles rate limiting, circuit breaking, API key auth, structured logging, and live analytics — without touching upstream code.
 
 ---
 
 ## Architecture
 
+Every request flows through a per-route middleware chain. `logger` and `proxy` are fixed (first and last); the rest are declared per-route in `routes.yaml`.
+
 ```
-Client Request
-      │
-      ▼
-┌─────────────────────────────────────┐
-│           Gatekeeper                │
-│                                     │
-│  ┌─────────────────────────────┐    │
-│  │      Middleware Chain       │    │
-│  │                             │    │
-│  │  1. Logger                  │    │
-│  │  2. Auth                    │    │
-│  │  3. Rate Limiter            │    │
-│  │  4. Circuit Breaker         │    │
-│  │  5. Proxy (terminal)        │    │
-│  └─────────────────────────────┘    │
-│                                     │
-└─────────────────────────────────────┘
-      │
-      ▼
- Upstream Service
+                 ┌────────────────────────────────────────────────────┐
+                 │                    GateKeeper                       │
+  client ──────► │ logger → auth → rate-limiter → circuit-breaker → proxy │ ──────► upstream
+                 └────────────────────────────────────────────────────┘
+                         │           │              │            │
+                         ▼           ▼              ▼            ▼
+                   access logs   Redis/in-mem   Redis/in-mem   httpx client
+                   (JSON lines)  API key store  limiter state  (connection pool)
 ```
 
-Each request flows forward through the chain. Any middleware can abort early and return a response immediately. After the upstream responds, `on_response` hooks fire in reverse order for cleanup, logging, and state updates.
+- `logger` — stamps request start time, emits one JSON access log line per request on completion.
+- `auth` — validates `X-API-Key` against SHA-256 hashes stored in Redis (optional or mandatory per config).
+- `rate-limiter` — token bucket or sliding window, keyed by API key or client IP, backed by Redis Lua scripts (or in-memory if no Redis).
+- `circuit-breaker` — per-route failure tracking with CLOSED / OPEN / RECOVERY states.
+- `proxy` — forwards to the upstream via a pooled `httpx.AsyncClient`, strips hop-by-hop headers, rewrites `Host`/`X-Forwarded-*`.
+
+Metrics from every request feed `/gatekeeper/metrics` (rolling window summary) and, if enabled, Prometheus at `/metrics`.
+
+![Grafana overview dashboard](docs/grafana-overview.png)
 
 ---
 
-## Project Structure
+## Features
 
-```
-GATEKEEPER/
-├── src/
-│   ├── models.py               # Core data models (ProxyRequest, ProxyResponse, etc.)
-│   ├── proxy.py                # Terminal proxy middleware — actual HTTP forwarding
-│   ├── middleware/
-│   │   ├── __init__.py         # MiddlewareChain runner
-│   │   ├── base.py             # Abstract Middleware interface
-│   │   ├── rate_limiter.py     # Token bucket + sliding window
-│   │   ├── circuit_breaker.py  # Closed → Open → Half-Open state machine
-│   │   ├── logger.py           # Structured JSON access logging
-│   │   ├── auth.py             # API key validation
-│   │   └── transformer.py      # Request/response header manipulation
-│   ├── storage/
-│   │   ├── base.py             # Abstract storage interface
-│   │   ├── memory.py           # In-memory store (testing)
-│   │   └── redis_store.py      # Redis-backed store (production)
-│   ├── config/
-│   │   ├── settings.py         # Pydantic settings (env vars)
-│   │   └── routes.py           # Route config loader
-│   ├── analytics/
-│   │   ├── collector.py        # Rolling metrics aggregation
-│   │   └── dashboard.py        # Live WebSocket dashboard
-│   └── api/
-│       └── main.py             # FastAPI entry point
-├── tests/
-│   ├── conftest.py
-│   ├── test_rate_limiter.py
-│   ├── test_circuit_breaker.py
-│   ├── test_middleware_chain.py
-│   ├── test_integration.py
-│   └── test_benchmarks.py
-├── config/
-│   └── routes.yaml             # Route definitions
-├── scripts/
-│   ├── benchmark.sh            # wrk load test
-│   └── fault_inject.sh         # tc netem network simulation
-├── docker-compose.yml
-├── Dockerfile
-├── requirements.txt
-└── .env.example
-```
+- **Reverse proxy** — longest-prefix route matching, optional path-prefix stripping, per-route timeouts.
+- **Rate limiting** — `token_bucket` or `sliding_window`, per-API-key or per-IP, atomic via Redis Lua scripts.
+- **Circuit breaker** — per-route CLOSED → OPEN → RECOVERY state machine with configurable thresholds and a single-probe recovery.
+- **API key auth** — `X-API-Key` header checked against SHA-256 hashes in Redis; optional or mandatory.
+- **Structured logging** — one JSON line per request (route, status, latency, rate-limit/circuit-breaker outcome).
+- **Live analytics** — rolling-window summary (`/gatekeeper/metrics`) and a WebSocket dashboard feed (`/gatekeeper/dashboard`).
+- **Prometheus metrics** — request counts, latency histograms, rate-limit and circuit-breaker gauges (`/metrics`, opt-in).
+- **Pluggable storage** — Redis-backed for multi-instance state, or in-memory for single-instance/dev.
+- **Health/readiness endpoints** — `/gatekeeper/health` (liveness) and `/gatekeeper/ready` (storage connectivity).
 
 ---
 
-## Core Concepts
+## Quickstart
 
-### Middleware Chain
-
-Every feature in Gatekeeper is a middleware. The chain runs in order — each middleware either continues to the next or aborts and returns early. After the upstream responds, `on_response` fires in reverse order.
-
-```
-Forward:  Logger → Auth → RateLimiter → CircuitBreaker → Proxy
-Reverse:  Proxy → CircuitBreaker → RateLimiter → Auth → Logger
+```bash
+git clone https://github.com/le-Affan/gatekeeper.git
+cd gatekeeper
+docker compose up -d
 ```
 
-This mirrors how Express.js, Django, and FastAPI middleware all work internally.
+This brings up GateKeeper (`:8080`), Redis, a mock upstream (`:8000`), Prometheus (`127.0.0.1:9090`), and Grafana (`127.0.0.1:3000`).
 
----
-
-### Rate Limiting
-
-Two algorithms, both implemented with atomic Lua scripts in Redis to prevent race conditions:
-
-**Token Bucket** — each client gets a bucket of N tokens refilled at R tokens/second. Allows bursting up to bucket capacity. Good for APIs where occasional traffic spikes are acceptable.
-
-**Sliding Window** — tracks all requests in the last N seconds using a Redis sorted set. No burst allowance. Strictly enforces the rate. Good for hard caps.
-
----
-
-### Circuit Breaker
-
-Three-state machine that protects upstream services from cascade failures:
-
-```
-CLOSED ──(threshold failures)──► OPEN ──(timeout elapsed)──► RECOVERY
-  ▲                                                               │
-  └──────────────(probe succeeds)────────────────────────────────┘
-```
-
-- **Closed** — normal operation, all requests flow through
-- **Open** — upstream is failing, reject all requests immediately with 503
-- **Recovery** — let one probe request through to test if upstream recovered
-
-Without a circuit breaker, a down upstream causes every request to wait for the full timeout. With it, failure is instant and the upstream gets time to recover.
-
----
-
-### Storage Abstraction
-
-Rate limiter and circuit breaker state can be stored in memory or Redis. Same interface, swappable without changing any middleware logic. In-memory for tests, Redis for production multi-instance deployments.
-
----
-
-### Route Configuration
-
-Routes are defined in `config/routes.yaml`:
+Default routes (`src/config/routes.yaml`):
 
 ```yaml
 routes:
-  - route_id: my-service
-    path_prefix: /api
-    upstream_url: http://localhost:8001
+  - route_id: 0001
+    path_prefix: /api/user
+    upstream_URL: http://mock-upstream:8000
+    timeout: 30
     strip_prefix: true
-    timeout_seconds: 30
-    middleware:
-      - logger
-      - rate_limiter
-      - circuit_breaker
-    metadata:
-      service_name: my-service
-      owner: affan
+    middleware_names:
+      - auth
+      - rate-limiter
+      - circuit-breaker
+    metadata: {}
+
+  - route_id: 0002
+    path_prefix: /api/user/admin
+    upstream_URL: http://mock-upstream:8000
+    timeout: 60
+    strip_prefix: true
+    middleware_names:
+      - auth
+      - rate-limiter
+      - circuit-breaker
+    metadata: {}
 ```
 
-Routing uses longest prefix match — `/api/v1` wins over `/api` for a request to `/api/v1/users`.
+```bash
+curl http://localhost:8080/api/user/
+```
+
+---
+
+## Configuration
+
+All settings are read from environment variables (or `.env`), defined in `src/config/settings.py`. Names are case-insensitive.
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `REDIS_URL` | `Optional[str]` | `None` | Redis connection string. If unset, falls back to in-memory storage (single instance only). |
+| `GATEWAY_PORT` | `int` | `8080` | Port the gateway listens on. |
+| `LOG_LEVEL` | `str` | `INFO` | Python logging level. |
+| `METRICS_WINDOW_SECONDS` | `int` | `60` | Rolling window size for `/gatekeeper/metrics` summary stats. |
+| `ENABLE_PROMETHEUS` | `bool` | `false` | Exposes `/metrics` in Prometheus exposition format when true; returns 404 otherwise. |
+| `AUTH_REQUIRE_AUTH` | `bool` | `false` | If true, requests without a valid `X-API-Key` are rejected (401/403). If false, missing keys pass through unauthenticated. |
+| `RATE_LIMIT_ALGORITHM` | `str` | `sliding_window` | `sliding_window` or `token_bucket`. |
+| `RATE_LIMIT_API_KEY_HEADERS` | `List[str]` | `["x-api-key", "authorization", "api-key", "apikey"]` | Headers checked (in order) to identify a client for rate limiting before falling back to IP. |
+| `RATE_LIMIT_CAPACITY` | `int` | `100` | Token bucket: max tokens (burst size). |
+| `RATE_LIMIT_REFILL_RATE` | `float` | `10.0` | Token bucket: tokens refilled per second. |
+| `RATE_LIMIT_LIMIT` | `int` | `100` | Sliding window: max requests per window. |
+| `RATE_LIMIT_WINDOW_SECONDS` | `int` | `60` | Sliding window: window size in seconds. |
+| `RATE_LIMIT_TRUST_FORWARDED_FOR` | `bool` | `false` | If true, trusts inbound `X-Forwarded-For` for client identification. Only enable behind a trusted proxy/LB. |
+| `CB_FAILURE_THRESHOLD` | `int` | `5` | Failures within `CB_WINDOW_SECONDS` required to trip CLOSED → OPEN. |
+| `CB_WINDOW_SECONDS` | `float` | `60.0` | Rolling window for counting failures. |
+| `CB_RECOVERY_TIMEOUT` | `float` | `30.0` | Time after tripping OPEN before a probe request is allowed (OPEN → RECOVERY). |
+| `CB_SUCCESS_THRESHOLD` | `int` | `1` | Consecutive successful probes required to close the circuit (RECOVERY → CLOSED). |
 
 ---
 
 ## Benchmarks
 
-> Results will be updated after running benchmarks.
+`wrk`-based load tests, gateway vs. raw upstream (`mock-upstream`), single gateway worker:
 
-```
-Benchmark 1: Raw upstream (no gateway)
-  Requests/sec
-  Latency p99
+| Benchmark | Result | Notes |
+|---|---|---|
+| Raw upstream | 4,771 req/sec | Baseline, no gateway in path. |
+| Gateway (`c=50`) | 476 req/sec, **1.4ms** p99 latency overhead | Full middleware chain (auth + rate-limiter + circuit-breaker + proxy). |
+| Gateway (`c=200`) | 346 req/sec | Throughput drops under higher concurrency — single uvicorn worker is the ceiling. |
+| Rate limiter accuracy | 100/500 concurrent requests allowed, 0 over-admission | Sliding window, limit=100; exact admission under burst load. |
+| Circuit breaker | Opens within 60s of backend failure, recovers in under 90s | Full CLOSED → OPEN → RECOVERY → CLOSED cycle under sustained traffic. |
 
-Benchmark 2: Through Gatekeeper
-  Requests/sec
-  Latency p99
-
-General Metrics:
-Middleware overhead (p99)
-Rate limiter accuracy
-Circuit breaker open time
-```
----
-
-## Tech Stack
-
-- **Python 3.11** — core language
-- **FastAPI** — HTTP framework and gateway entry point
-- **httpx** — async HTTP client for upstream forwarding
-- **Redis** — distributed rate limit and circuit breaker state
-- **Pydantic** — settings and data validation
-- **Docker** — containerisation
-- **Prometheus + Grafana** — metrics and dashboards
-- **pytest** — testing
-- **wrk** — load testing
+![Full circuit breaker cycle in Grafana](docs/grafana-full-cycle.png)
 
 ---
 
-## Author
+## Circuit Breaker
 
-**Affan Shaikh**
-- GitHub: [le-Affan](https://github.com/le-Affan)
-- LinkedIn: [affan-shaikh-ml](https://linkedin.com/in/affan-shaikh-ml)
+Per-route state machine (`src/middleware/circuit_breaker.py`), state stored in memory per `CircuitBreaker` instance:
+
+- **CLOSED** — normal operation. Failed responses (no response, or status ≥ 500) are recorded in a rolling window. If `CB_FAILURE_THRESHOLD` failures occur within `CB_WINDOW_SECONDS`, the circuit trips to **OPEN**.
+- **OPEN** — all requests fail fast with `503 Service Unavailable` and a `Retry-After` header; no upstream call is made. After `CB_RECOVERY_TIMEOUT` seconds, the next request is admitted as a single probe and the circuit moves to **RECOVERY**.
+- **RECOVERY** (half-open) — exactly one probe request is in flight at a time. A successful probe increments a success counter; once it reaches `CB_SUCCESS_THRESHOLD`, the circuit closes (back to **CLOSED**). A failed probe immediately reopens the circuit and restarts the recovery timer.
+
+State is per route (`route_id`) and per gateway process — see [Known Limitations](#known-limitations).
+
+![Circuit breaker open in Grafana](docs/grafana-circuit-open.png)
+
+---
+
+## Management API
+
+```bash
+# Liveness — process is up
+curl http://localhost:8080/gatekeeper/health
+# {"status": "ok"}
+
+# Rolling-window analytics summary
+curl http://localhost:8080/gatekeeper/metrics
+# {
+#   "requests_per_second": ...,
+#   "error_rate_percent": ...,
+#   "rate_limit_rate_percent": ...,
+#   "circuit_open_rate_percent": ...,
+#   "latency_ms": {"p50": ..., "p95": ..., "p99": ..., "avg": ...},
+#   "per_route": {...}
+# }
+
+# Loaded route table
+curl http://localhost:8080/gatekeeper/routes
+# {"routes": [{"route_id": "0001", "path_prefix": "/api/user", ...}, ...]}
+```
+
+Other endpoints: `/gatekeeper/ready` (storage connectivity), `/gatekeeper/dashboard` (WebSocket live feed), `/metrics` (Prometheus, requires `ENABLE_PROMETHEUS=true`).
+
+---
+
+## Custom Routes
+
+Add an entry to `src/config/routes.yaml`:
+
+```yaml
+routes:
+  - route_id: 0003
+    path_prefix: /api/v1
+    upstream_URL: http://your-service:8000
+    timeout: 30
+    strip_prefix: true
+    middleware_names:
+      - auth
+      - rate-limiter
+      - circuit-breaker
+    metadata: {}
+```
+
+Requests to `/api/v1/*` are forwarded to `http://your-service:8000/*` (prefix stripped). Route matching is longest-prefix-first, so more specific prefixes (e.g. `/api/user/admin`) take priority over shorter ones (`/api/user`). `middleware_names` must reference middleware registered in `_build_registry` (`auth`, `rate-limiter`, `circuit-breaker`); `logger` and `proxy` are implicit.
+
+---
+
+## Demo
+
+```bash
+sudo bash scripts/demo.sh
+```
+
+Runs background traffic against `/api/user/`, then injects a 30-second total network partition to `mock-upstream` via `tc netem` (root required for `tc`). Watch the **Gatekeeper Stack - Overview** dashboard at `http://localhost:3000`:
+
+- `gatekeeper_circuit_open`: `0` → `1` (trips OPEN) → `0` (recovers to CLOSED)
+- Request status codes: `2xx` → `502`/`504` (fault) → `503` (circuit open, fast-fail) → `2xx`
+- Upstream duration stops updating while OPEN (no upstream calls are made)
+
+---
+
+## Known Limitations
+
+- **Single worker only** — `prometheus_client`'s default registry is per-process; running multiple uvicorn workers would scatter `/metrics` across them. Scaling requires Prometheus multiprocess mode.
+- **In-memory circuit breaker state** — circuit state lives in the `CircuitBreaker` instance of a single process. Running multiple gateway instances gives each its own independent circuit per route.
+- **Not a drop-in Nginx/Envoy replacement** — no TLS termination, HTTP/2, WebSocket proxying (beyond the dashboard), or config hot-reload. Built for learning and small/internal deployments.
+
+---
+
+Built by Affan Shaikh ([le-Affan](https://github.com/le-Affan)) — every line written from first principles.
