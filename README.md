@@ -11,10 +11,10 @@ A self-hostable API gateway built with FastAPI. Sits in front of your services a
 Every request flows through a per-route middleware chain. `logger` and `proxy` are fixed (first and last); the rest are declared per-route in `routes.yaml`.
 
 ```
-                 ┌────────────────────────────────────────────────────┐
-                 │                    GateKeeper                       │
+                 ┌────────────────────────────────────────────────────────┐
+                 │                    GateKeeper                          │
   client ──────► │ logger → auth → rate-limiter → circuit-breaker → proxy │ ──────► upstream
-                 └────────────────────────────────────────────────────┘
+                 └────────────────────────────────────────────────────────┘
                          │           │              │            │
                          ▼           ▼              ▼            ▼
                    access logs   Redis/in-mem   Redis/in-mem   httpx client
