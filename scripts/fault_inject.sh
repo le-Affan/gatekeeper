@@ -8,6 +8,10 @@
 #
 set -euo pipefail
 
+# Run from the repo root regardless of invocation cwd, so `docker compose`
+# resolves the correct project (needed for resolve_veth below).
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
 FAULT_DURATION=30
 FAULT_ACTIVE=false
 
@@ -97,7 +101,9 @@ echo "Generate traffic against http://localhost:8080/api/user/ now"
 echo "(e.g. a wrk or curl loop) so the circuit breaker has requests to act on."
 sleep 2
 
-tc qdisc add dev "${VETH}" root netem loss 100%
+# 'replace' instead of 'add' so a stale qdisc left by a prior interrupted
+# run (which 'add' would reject with "File exists") is overwritten cleanly.
+tc qdisc replace dev "${VETH}" root netem loss 100%
 FAULT_ACTIVE=true
 
 echo
