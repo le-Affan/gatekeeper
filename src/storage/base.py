@@ -3,6 +3,8 @@ from typing import Any, Optional
 
 
 class Storage(ABC):
+    """Abstract backend interface for key/value storage used by middleware components."""
+
     # method to get a value if it exists in the store.
     @abstractmethod
     async def get_value(self, key: str) -> Optional[Any]:
