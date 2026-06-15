@@ -6,7 +6,7 @@ from src.models import MiddlewareContext, MiddlewareResult
 class Middleware(ABC):
     @property  # lets you access a method like its an attribute
     @abstractmethod
-    def name(self) -> str:  # used to indentify the middleware
+    def name(self) -> str:  # used to identify the middleware
         pass
 
     @abstractmethod
